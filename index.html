@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐬 Uber Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f1f5f9; color: #0f172a; font-family: 'DM Sans', system-ui, sans-serif; padding: 16px; max-width: 700px; margin: 0 auto; }
+  input, textarea, button { font-family: inherit; }
+  input:focus, textarea:focus { outline: none; border-color: #3b82f6 !important; }
+  .bebas { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
+  .card { background: #fff; border-radius: 14px; padding: 16px; border: 1px solid #e2e8f0; margin-bottom: 12px; }
+  .btn { border: none; border-radius: 10px; padding: 12px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .mono { font-family: monospace; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+
+// ═══════════════════════════════
+// CONFIGURAÇÕES
+// ═══════════════════════════════
+const DAYS = [
+  { date: "08/06", label: "Seg" },
+  { date: "09/06", label: "Ter" },
+  { date: "10/06", label: "Qua" },
+  { date: "11/06", label: "Qui" },
+  { date: "12/06", label: "Sex" },
+  { date: "13/06", label: "Sáb" },
+  { date: "14/06", label: "Dom" },
+];
+
+// Ordem: Black, Comfort, Priority, UberX, Particular
+const TIPOS = [
+  { key: "black",     label: "Black",     color: "#334155", bg: "#f1f5f9", icon: "🖤", uber: true  },
+  { key: "comfort",   label: "Comfort",   color: "#7c3aed", bg: "#ede9fe", icon: "💎", uber: true  },
+  { key: "priority",  label: "Priority",  color: "#d97706", bg: "#fef3c7", icon: "⚡", uber: true  },
+  { key: "uberx",     label: "UberX",     color: "#0284c7", bg: "#e0f2fe", icon: "🚗", uber: true  },
+  { key: "particular",label: "Particular",color: "#059669", bg: "#d1fae5", icon: "🤝", uber: false },
+];
+
+const CUSTO_KM   = 1.09;
+const META_450   = 450;
+const META_500   = 500;
+const KEY        = "uber_html_v3";
+
+// Bônus
+const BONUS = [
+  { key: "comfort25",  tipo: "comfort", meta: 25,  valor: 55,  msg: "🎉 25 corridas Comfort! Bônus de R$55,00 desbloqueado!" },
+  { key: "comfort85",  tipo: "comfort", meta: 85,  valor: 150, msg: "🏆 85 corridas Comfort! Bônus de R$150,00 desbloqueado! Total R$205!" },
+  { key: "black20",    tipo: "black",   meta: 20,  valor: 70,  msg: "🖤 20 corridas Black! Bônus de R$70,00 desbloqueado!" },
+];
+
+// Missão fim de semana: 50 corridas Sex-Dom = R$140
+const MISSAO_FDS = {
+  meta: 50,
+  valor: 140,
+  inicio: "12/06", // Sexta
+  fim: "14/06",    // Domingo
+  dias: [4, 5, 6], // índices Sex, Sáb, Dom
+};
+
+// ═══════════════════════════════
+// ESTADO
+// ═══════════════════════════════
+function diaVazio() {
+  return {
+    corridas: [],
+    kmTotal: 0, kmPessoal: 0,
+    horaSaida: "", horaAlmocoSaiu: "", horaAlmocoVoltou: "", horaFim: "",
+    bonusAlertados: [], bonusDia: 0
+  };
+}
+
+function carregarEstado() {
+  try {
+    // Tenta versões anteriores também
+    for (const k of [KEY, "uber_html_v2", "uber_v8", "uber_tracker_v5"]) {
+      const s = localStorage.getItem(k);
+      if (s) {
+        const p = JSON.parse(s);
+        if (Array.isArray(p) && p.length >= 7) {
+          return p.slice(0,7).map(d => ({
+            corridas: Array.isArray(d.corridas||d.rides) ? (d.corridas||d.rides) : [],
+            kmTotal: d.kmTotal||d.kmOdometro||d.km||0,
+            kmPessoal: d.kmPessoal||0,
+            horaSaida: d.horaSaida||"",
+            horaAlmocoSaiu: d.horaAlmocoSaiu||"",
+            horaAlmocoVoltou: d.horaAlmocoVoltou||"",
+            horaFim: d.horaFim||"",
+            bonusAlertados: d.bonusAlertados||[]
+          }));
+        }
+      }
+    }
+  } catch {}
+  return DAYS.map(() => diaVazio());
+}
+
+let estado = carregarEstado();
+let diaAtivo = (() => {
+  const hoje = new Date().toLocaleDateString("pt-BR", { timeZone:"America/Fortaleza", day:"2-digit", month:"2-digit" });
+  const i = DAYS.findIndex(d => d.date === hoje);
+  return i >= 0 ? i : 0;
+})();
+
+function salvar() {
+  try { localStorage.setItem(KEY, JSON.stringify(estado)); } catch {}
+}
+
+// ═══════════════════════════════
+// HELPERS
+// ═══════════════════════════════
+function el(tag, props, ...filhos) {
+  const e = document.createElement(tag);
+  if (props) {
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "style" && typeof v === "object") Object.assign(e.style, v);
+      else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === "class") e.className = v;
+      else e.setAttribute(k, v);
+    }
+  }
+  for (const f of filhos.flat()) {
+    if (f == null) continue;
+    e.appendChild(typeof f === "string" ? document.createTextNode(f) : f);
+  }
+  return e;
+}
+
+function div(style, ...f) { return el("div", { style }, ...f); }
+function pct(v, max) { return Math.min((v/max)*100,100).toFixed(0); }
+function rs(n) { return `R$${parseFloat(n||0).toFixed(2)}`; }
+
+function numInput(style, val, onCh) {
+  const inp = el("input", { type:"text", inputmode:"decimal", autocomplete:"off", style });
+  inp.value = val || "";
+  inp.addEventListener("focus", () => inp.select());
+  inp.addEventListener("input", e => {
+    let v = e.target.value.replace(/[^0-9.,]/g,"").replace(",",".");
+    const pts = v.split(".");
+    if (pts.length > 2) v = pts[0]+"."+pts.slice(1).join("");
+    e.target.value = v;
+    onCh(parseFloat(v)||0);
+  });
+  return inp;
+}
+
+function timeInput(style, val, onCh) {
+  const inp = el("input", { type:"time", style });
+  inp.value = val || "";
+  inp.addEventListener("change", e => { onCh(e.target.value); salvar(); render(); });
+  return inp;
+}
+
+function minToHm(min) {
+  if (!min || min <= 0) return "—";
+  const h = Math.floor(min/60);
+  const m = min%60;
+  return h > 0 ? `${h}h${m.toString().padStart(2,"0")}` : `${m}min`;
+}
+
+function calcTempo(d) {
+  function toMin(t) {
+    if (!t) return null;
+    const [h,m] = t.split(":").map(Number);
+    return h*60+m;
+  }
+  const saida   = toMin(d.horaSaida);
+  const almSaiu = toMin(d.horaAlmocoSaiu);
+  const almVolt = toMin(d.horaAlmocoVoltou);
+  const fim     = toMin(d.horaFim);
+  if (!saida || !fim) return null;
+  let total = fim - saida;
+  if (total < 0) total += 24*60;
+  let almoço = 0;
+  if (almSaiu && almVolt) {
+    almoço = almVolt - almSaiu;
+    if (almoço < 0) almoço = 0;
+  }
+  const trabalhado = total - almoço;
+  return { total, almoço, trabalhado };
+}
+
+// Calcula bônus totais acumulados
+function calcBonusTotal(todasCorridas) {
+  const totalComfort = todasCorridas.filter(r => r.tipo==="comfort").length;
+  const totalBlack   = todasCorridas.filter(r => r.tipo==="black").length;
+  // Particular não conta para bônus
+  let bonus = 0;
+  let atingidos = [];
+  if (totalComfort >= 25)  { bonus += 55;  atingidos.push("comfort25"); }
+  if (totalComfort >= 85)  { bonus += 150; atingidos.push("comfort85"); }
+  if (totalBlack   >= 20)  { bonus += 70;  atingidos.push("black20"); }
+  return { bonus, atingidos, totalComfort, totalBlack };
+}
+
+// Calcula progresso da missão fds
+function calcMissaoFds() {
+  let total = 0;
+  for (const i of MISSAO_FDS.dias) {
+    // Particular não conta para missão
+    total += (estado[i]?.corridas?.filter(r => r.tipo !== "particular").length || 0);
+  }
+  const ok = total >= MISSAO_FDS.meta;
+  return { total, ok, falta: Math.max(0, MISSAO_FDS.meta - total) };
+}
+
+// ═══════════════════════════════
+// RENDER PRINCIPAL
+// ═══════════════════════════════
+function render() {
+  // Verifica novos bônus atingidos
+  const todasCorridas = estado.flatMap(d => d.corridas);
+  const { atingidos } = calcBonusTotal(todasCorridas);
+  const jaAlertados = JSON.parse(localStorage.getItem("bonusAlertados")||"[]");
+  // Verifica missão fds
+  const mFds = calcMissaoFds();
+  if (mFds.ok && !jaAlertados.includes("missao_fds")) {
+    setTimeout(() => alert("🏁 MISSÃO FIM DE SEMANA COMPLETA! 50 corridas = R$140,00 desbloqueados!"), 300);
+    const novoAlertados = [...jaAlertados, "missao_fds"];
+    localStorage.setItem("bonusAlertados", JSON.stringify(novoAlertados));
+    // Adiciona R$140 ao dia domingo (índice 6)
+    estado[6].bonusDia = (estado[6].bonusDia || 0) + 140;
+    salvar();
+  }
+
+  const novos = atingidos.filter(k => !jaAlertados.includes(k));
+  if (novos.length > 0) {
+    novos.forEach(k => {
+      const b = BONUS.find(x => x.key===k);
+      if (b) {
+        setTimeout(() => alert(b.msg), 300);
+        // Adiciona o valor do bônus ao dia atual
+        estado[diaAtivo].bonusDia = (estado[diaAtivo].bonusDia || 0) + b.valor;
+      }
+    });
+    localStorage.setItem("bonusAlertados", JSON.stringify([...jaAlertados, ...novos]));
+    salvar();
+  }
+
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.appendChild(renderApp());
+}
+
+function renderApp() {
+  const todasCorridas  = estado.flatMap(d => d.corridas);
+  const totalBruto     = todasCorridas.reduce((s,r)=>s+r.valor,0);
+  const totalKmPass    = todasCorridas.reduce((s,r)=>s+r.km,0);
+  const totalKm        = estado.reduce((s,d)=>s+(d.kmTotal||0),0);
+  const totalKmPes     = estado.reduce((s,d)=>s+(d.kmPessoal||0),0);
+  const totalKmUber    = Math.max(0, totalKm - totalKmPes);
+  const totalKmVazio   = Math.max(0, totalKmUber - totalKmPass);
+  const pctVazio       = totalKmUber > 0 ? ((totalKmVazio/totalKmUber)*100).toFixed(1) : 0;
+  const totalCusto     = +(totalKm * CUSTO_KM).toFixed(2);
+  const { bonus: totalBonus, atingidos, totalComfort, totalBlack } = calcBonusTotal(todasCorridas);
+  const totalLiquido   = +(totalBruto - totalCusto + totalBonus).toFixed(2);
+  const diasMeta       = estado.filter(d=>d.corridas.reduce((s,r)=>s+r.valor,0)>=META_450).length;
+  const vcor           = pctVazio > 40 ? "#dc2626" : pctVazio > 25 ? "#d97706" : "#16a34a";
+
+  const wrap = el("div",{});
+
+  // HEADER
+  const hdr = div({ textAlign:"center", marginBottom:"16px" });
+  hdr.appendChild(el("div",{ class:"bebas", style:{ fontSize:"36px", background:"linear-gradient(90deg,#0284c7,#7c3aed)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" } },"UBER TRACKER"));
+  hdr.appendChild(div({ fontSize:"11px", color:"#64748b", letterSpacing:"2px" },"🐬 Dolphin GS · R$1,09/km · 08–14/06 · Fechamento 15/06"));
+  wrap.appendChild(hdr);
+
+  // BÔNUS CONQUISTADOS
+  if (atingidos.length > 0) {
+    const bBox = div({ background:"#fefce8", borderRadius:"12px", padding:"12px 16px", marginBottom:"12px", border:"2px solid #fde047" });
+    bBox.appendChild(div({ fontSize:"11px", color:"#854d0e", fontWeight:"700", marginBottom:"8px" },"🏆 BÔNUS CONQUISTADOS"));
+    for (const k of atingidos) {
+      const b = BONUS.find(x=>x.key===k);
+      bBox.appendChild(div({ fontSize:"12px", color:"#713f12", marginBottom:"4px" }, b.msg));
+    }
+    wrap.appendChild(bBox);
+  }
+
+  // KPIs
+  const kpis = div({ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px", marginBottom:"12px" });
+
+  function kpiCard(bg, border, lc, label, valor, sub, barP, barC) {
+    const c = div({ background:bg, borderRadius:"12px", padding:"14px", border:`1px solid ${border}` });
+    c.appendChild(div({ fontSize:"10px", color:lc, fontWeight:"700", letterSpacing:"2px", marginBottom:"2px" },label));
+    c.appendChild(el("div",{ class:"bebas mono", style:{ fontSize:"28px", color:lc } },valor));
+    if (barP !== undefined) {
+      const bw = div({ height:"4px", background:"#e2e8f0", borderRadius:"99px", margin:"6px 0", overflow:"hidden" });
+      bw.appendChild(div({ height:"100%", width:`${Math.min(barP,100)}%`, background:barC, borderRadius:"99px" }));
+      c.appendChild(bw);
+    }
+    c.appendChild(div({ fontSize:"10px", color:"#64748b", marginTop:"2px" },sub));
+    return c;
+  }
+
+  kpis.appendChild(kpiCard("#fef9c3","#fde68a","#b45309","BRUTO TOTAL",rs(totalBruto),`${todasCorridas.length} corridas · ${diasMeta}/7 dias ✓`,(totalBruto/(META_450*7))*100,"#f59e0b"));
+  kpis.appendChild(kpiCard("#dcfce7","#bbf7d0","#15803d","LÍQUIDO TOTAL",rs(totalLiquido),`custo ${rs(totalCusto)} · bônus +${rs(totalBonus)}`,(totalLiquido/(META_450*7))*100,"#22c55e"));
+
+  // Bônus progress
+  const bpCard = div({ background:"#faf5ff", borderRadius:"12px", padding:"14px", border:`1px solid ${atingidos.includes("comfort85")?"#a855f7":"#e9d5ff"}` });
+  bpCard.appendChild(div({ fontSize:"10px", color:"#7c3aed", fontWeight:"700", letterSpacing:"2px", marginBottom:"8px" },"💎 BÔNUS COMFORT"));
+  // 25 corridas — mostra conquistado por 1 dia, depois some
+  const b25ok = totalComfort >= 25;
+  const b25conquistadoEm = localStorage.getItem("bonus_comfort25_dia");
+  const hojeStr = new Date().toLocaleDateString("pt-BR",{timeZone:"America/Fortaleza",day:"2-digit",month:"2-digit"});
+  if (!b25ok) {
+    // Ainda não bateu — mostra progresso
+    const b25 = div({ marginBottom:"6px" });
+    const b25h = div({ display:"flex", justifyContent:"space-between", fontSize:"11px", marginBottom:"3px" });
+    b25h.appendChild(div({ color:"#64748b", fontWeight:"700" }, "25 corridas → +R$55"));
+    b25h.appendChild(div({ color:"#94a3b8", fontFamily:"monospace" }, `${Math.min(totalComfort,25)}/25`));
+    b25.appendChild(b25h);
+    const b25w = div({ height:"4px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden" });
+    b25w.appendChild(div({ height:"100%", width:`${pct(totalComfort,25)}%`, background:"linear-gradient(90deg,#7c3aed,#a855f7)", borderRadius:"99px" }));
+    b25.appendChild(b25w);
+    bpCard.appendChild(b25);
+  } else if (b25conquistadoEm === hojeStr) {
+    // Bateu hoje — mostra conquistado em verde
+    if (!b25conquistadoEm) localStorage.setItem("bonus_comfort25_dia", hojeStr);
+    const b25 = div({ marginBottom:"6px", background:"#f0fdf4", borderRadius:"8px", padding:"6px 8px", border:"1px solid #bbf7d0" });
+    b25.appendChild(div({ fontSize:"11px", color:"#16a34a", fontWeight:"700" }, "✓ 25 corridas Comfort — R$55 conquistado hoje! 🎉"));
+    bpCard.appendChild(b25);
+  }
+  // Se bateu antes de hoje, não mostra nada (some automaticamente)
+  if (b25ok && !b25conquistadoEm) localStorage.setItem("bonus_comfort25_dia", hojeStr);
+  // 85 corridas
+  const b85ok = totalComfort >= 85;
+  const b85 = div({});
+  const b85h = div({ display:"flex", justifyContent:"space-between", fontSize:"11px", marginBottom:"3px" });
+  b85h.appendChild(div({ color: b85ok?"#16a34a":"#64748b", fontWeight:"700" }, b85ok?"✓ 85 corridas +R$150":"85 corridas → +R$150"));
+  b85h.appendChild(div({ color:"#94a3b8", fontFamily:"monospace" }, `${Math.min(totalComfort,85)}/85`));
+  b85.appendChild(b85h);
+  const b85w = div({ height:"4px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden" });
+  b85w.appendChild(div({ height:"100%", width:`${pct(totalComfort,85)}%`, background:b85ok?"#22c55e":"linear-gradient(90deg,#7c3aed,#a855f7)", borderRadius:"99px" }));
+  b85.appendChild(b85w);
+  bpCard.appendChild(b85);
+  kpis.appendChild(bpCard);
+
+  // Black bônus
+  const blCard = div({ background:"#f8fafc", borderRadius:"12px", padding:"14px", border:`1px solid ${atingidos.includes("black20")?"#334155":"#e2e8f0"}` });
+  blCard.appendChild(div({ fontSize:"10px", color:"#334155", fontWeight:"700", letterSpacing:"2px", marginBottom:"8px" },"🖤 BÔNUS BLACK"));
+  const bl20ok = totalBlack >= 20;
+  const blh = div({ display:"flex", justifyContent:"space-between", fontSize:"11px", marginBottom:"3px" });
+  blh.appendChild(div({ color: bl20ok?"#16a34a":"#64748b", fontWeight:"700" }, bl20ok?"✓ 20 corridas +R$70":"20 corridas → +R$70"));
+  blh.appendChild(div({ color:"#94a3b8", fontFamily:"monospace" }, `${Math.min(totalBlack,20)}/20`));
+  blCard.appendChild(blh);
+  const blw = div({ height:"4px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", marginBottom:"4px" });
+  blw.appendChild(div({ height:"100%", width:`${pct(totalBlack,20)}%`, background:bl20ok?"#22c55e":"#334155", borderRadius:"99px" }));
+  blCard.appendChild(blw);
+  blCard.appendChild(div({ fontSize:"10px", color:"#64748b" }, bl20ok?"✓ BÔNUS R$70 GARANTIDO! 🎉":`Faltam ${Math.max(0,20-totalBlack)} corridas`));
+  kpis.appendChild(blCard);
+
+  // Missão fds card
+  const mFdsData = calcMissaoFds();
+  const mCard = div({ background: mFdsData.ok?"#fef9c3":"#f8fafc", borderRadius:"12px", padding:"14px", border:`1px solid ${mFdsData.ok?"#fde047":"#e2e8f0"}`, gridColumn:"span 2" });
+  mCard.appendChild(div({ fontSize:"10px", color:"#854d0e", fontWeight:"700", letterSpacing:"2px", marginBottom:"8px" },"🏁 MISSÃO FIM DE SEMANA (Sex→Dom)"));
+  const mRow = div({ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:"6px" });
+  mRow.appendChild(el("div",{ class:"mono", style:{ fontSize:"22px", fontWeight:"700", color:mFdsData.ok?"#854d0e":"#0f172a" } },`${mFdsData.total}/50`));
+  mRow.appendChild(div({ fontSize:"13px", fontWeight:"700", color:mFdsData.ok?"#854d0e":"#64748b" }, mFdsData.ok?"✓ R$140 GARANTIDO! 🎉":`faltam ${mFdsData.falta} corridas → R$140`));
+  mCard.appendChild(mRow);
+  const mBw = div({ height:"6px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", marginBottom:"4px" });
+  mBw.appendChild(div({ height:"100%", width:`${Math.min((mFdsData.total/50)*100,100)}%`, background:mFdsData.ok?"linear-gradient(90deg,#eab308,#ca8a04)":"linear-gradient(90deg,#f59e0b,#d97706)", borderRadius:"99px" }));
+  mCard.appendChild(mBw);
+  mCard.appendChild(div({ fontSize:"10px", color:"#92400e" },`${Math.min((mFdsData.total/50)*100,100).toFixed(0)}% · todas categorias contam`));
+  kpis.appendChild(mCard);
+
+  wrap.appendChild(kpis);
+
+  // KM VAZIO GLOBAL
+  if (totalKmUber > 0) {
+    const kmBox = el("div",{ class:"card", style:{ marginBottom:"12px" } });
+    kmBox.appendChild(div({ fontSize:"10px", color:"#64748b", fontWeight:"700", letterSpacing:"1px", marginBottom:"8px" },"🐬 EFICIÊNCIA DE ROTA"));
+    const g = div({ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"6px", marginBottom:"8px" });
+    for (const m of [
+      { l:"c/ pass.", v:`${totalKmPass.toFixed(0)}km`, c:"#16a34a" },
+      { l:"vazio",    v:`${totalKmVazio.toFixed(0)}km`, c:vcor },
+      { l:"% vazio",  v:`${pctVazio}%`, c:vcor },
+      { l:"pessoal",  v:`${totalKmPes.toFixed(0)}km`, c:"#94a3b8" },
+    ]) {
+      const mc = div({ textAlign:"center", background:"#f8fafc", borderRadius:"8px", padding:"6px 4px", border:"1px solid #e2e8f0" });
+      mc.appendChild(div({ fontSize:"9px", color:"#64748b", marginBottom:"2px" },m.l));
+      mc.appendChild(el("div",{ class:"mono", style:{ color:m.c, fontSize:"12px", fontWeight:"700" } },m.v));
+      g.appendChild(mc);
+    }
+    kmBox.appendChild(g);
+    const brow = div({ height:"6px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", display:"flex" });
+    brow.appendChild(div({ width:`${100-pctVazio}%`, background:"linear-gradient(90deg,#22c55e,#16a34a)" }));
+    brow.appendChild(div({ flex:"1", background:vcor, opacity:"0.4" }));
+    kmBox.appendChild(brow);
+    wrap.appendChild(kmBox);
+  }
+
+  // SELETOR DE DIAS
+  const sel = div({ display:"flex", gap:"6px", marginBottom:"12px", overflowX:"auto", paddingBottom:"4px" });
+  for (let i=0; i<DAYS.length; i++) {
+    const d = DAYS[i];
+    const b = estado[i].corridas.reduce((s,r)=>s+r.valor,0);
+    const ok = b >= META_450;
+    const btn = el("button",{
+      style:{ flex:"0 0 auto", background:diaAtivo===i?"linear-gradient(135deg,#3b82f6,#2563eb)":"#fff", border:`2px solid ${ok?"#22c55e":diaAtivo===i?"#3b82f6":"#e2e8f0"}`, borderRadius:"10px", padding:"8px 10px", cursor:"pointer", color:diaAtivo===i?"#fff":"#0f172a", minWidth:"60px", textAlign:"center" },
+      onClick: ()=>{ diaAtivo=i; render(); }
+    });
+    btn.appendChild(div({ fontFamily:"'Bebas Neue',sans-serif", fontSize:"16px" },d.label));
+    btn.appendChild(div({ fontSize:"10px", color:diaAtivo===i?"#bfdbfe":"#64748b" },d.date));
+    btn.appendChild(div({ fontSize:"11px", fontFamily:"monospace", color:ok?"#16a34a":b>0?"#d97706":"#94a3b8" },b>0?`R$${b.toFixed(0)}`:"—"));
+    const cnt = estado[i].corridas.length;
+    if (cnt>0) btn.appendChild(div({ fontSize:"9px", color:diaAtivo===i?"#bfdbfe":"#94a3b8" },`${cnt} corr.`));
+    sel.appendChild(btn);
+  }
+  wrap.appendChild(sel);
+
+  // PAINEL DO DIA
+  wrap.appendChild(renderDia());
+
+  // NOTAS
+  const notaBox = el("div",{ class:"card" });
+  notaBox.appendChild(div({ fontSize:"11px", color:"#64748b", fontWeight:"700", letterSpacing:"1px", marginBottom:"8px" },"📝 NOTAS"));
+  const ta = el("textarea",{
+    placeholder:"Zonas quentes, horários de pico, estratégias...",
+    style:{ width:"100%", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:"8px", padding:"10px", color:"#0f172a", fontSize:"13px", lineHeight:"1.6", minHeight:"72px", resize:"vertical" },
+    onInput: e=>{ try{ localStorage.setItem("uber_nota",e.target.value); }catch{} }
+  });
+  ta.value = localStorage.getItem("uber_nota")||"";
+  notaBox.appendChild(ta);
+  wrap.appendChild(notaBox);
+
+  // BACKUP
+  wrap.appendChild(renderBackup());
+
+  wrap.appendChild(div({ textAlign:"center", padding:"10px 0", borderTop:"1px solid #e2e8f0", color:"#94a3b8", fontSize:"10px", letterSpacing:"1px", marginTop:"8px" },
+    "Fechamento 15/06 · Metas R$450 e R$500/dia · Bônus Comfort R$205 · Black R$70 · 🐬 R$1,09/km"
+  ));
+
+  return wrap;
+}
+
+// ═══════════════════════════════
+// PAINEL DO DIA
+// ═══════════════════════════════
+function renderDia() {
+  const d        = estado[diaAtivo];
+  const info     = DAYS[diaAtivo];
+  const corridas = d.corridas;
+  const todasCorridas = estado.flatMap(x=>x.corridas);
+
+  const bruto     = corridas.reduce((s,r)=>s+r.valor,0) + (d.bonusDia||0);
+  const kmPass    = corridas.reduce((s,r)=>s+r.km,0);
+  const kmTot     = d.kmTotal||0;
+  const kmPes     = d.kmPessoal||0;
+  const kmUber    = Math.max(0,+(kmTot-kmPes).toFixed(1));
+  const kmVazio   = Math.max(0,+(kmUber-kmPass).toFixed(1));
+  const pctV      = kmUber>0?+((kmVazio/kmUber)*100).toFixed(1):0;
+  const custo     = +(kmTot*CUSTO_KM).toFixed(2);
+  const liquido   = +(bruto-custo).toFixed(2);
+  const ok450     = bruto>=META_450;
+  const ok500     = bruto>=META_500;
+  const vc        = pctV>40?"#dc2626":pctV>25?"#d97706":"#16a34a";
+
+  const { totalComfort, totalBlack } = calcBonusTotal(todasCorridas);
+  const falta450  = Math.max(0,META_450-bruto);
+  const falta500  = Math.max(0,META_500-bruto);
+  const faltaB25  = Math.max(0,25-totalComfort);
+  const faltaB85  = Math.max(0,85-totalComfort);
+  const faltaBl20 = Math.max(0,20-totalBlack);
+  const okB25     = totalComfort>=25;
+  const okB85     = totalComfort>=85;
+  const okBl20    = totalBlack>=20;
+
+  // Tempo produtivo
+  const tempo = calcTempo(d);
+
+  const wrap = el("div",{});
+
+  // ── INCENTIVO ──
+  let emoji, texto, cor;
+  if (bruto===0)            { emoji="🔥"; texto="Bora começar! Liga o Dolphin e parte pra cima!"; cor="#0284c7"; }
+  else if (ok500&&okB85)    { emoji="🏆"; texto="META R$500 E BÔNUS BATIDOS! Dia perfeito!"; cor="#16a34a"; }
+  else if (ok500)           { emoji="🚀"; texto=`R$500 batido! Faltam ${faltaB85} Comfort pro bônus!`; cor="#6d28d9"; }
+  else if (ok450&&okB85)    { emoji="💪"; texto=`R$450 e bônus garantidos! Falta só ${rs(falta500)} pro R$500!`; cor="#16a34a"; }
+  else if (ok450)           { emoji="✅"; texto=`R$450 batido! Falta ${rs(falta500)} pro R$500!`; cor="#16a34a"; }
+  else if (okB85)           { emoji="💎"; texto=`Bônus garantido! Falta ${rs(falta450)} pra meta de R$450.`; cor="#7c3aed"; }
+  else if (bruto>=300)      { emoji="💪"; texto=`Quase lá! Falta ${rs(falta450)} pra R$450. Vai!`; cor="#d97706"; }
+  else if (bruto>=150)      { emoji="🚗"; texto=`Bom ritmo! Falta ${rs(falta450)} — prioriza as Comfort!`; cor="#d97706"; }
+  else                      { emoji="🐬"; texto="Dolphin na pista! Prioriza Black e Comfort sempre que puder!"; cor="#0284c7"; }
+
+  const inc = div({ background:"#fff", borderRadius:"14px", padding:"14px", marginBottom:"12px", border:`2px solid ${cor}` });
+  const msgRow = div({ display:"flex", gap:"10px", alignItems:"center", marginBottom:"12px" });
+  msgRow.appendChild(div({ fontSize:"24px" },emoji));
+  msgRow.appendChild(div({ fontSize:"13px", color:"#1e293b", lineHeight:"1.5", fontWeight:"500" },texto));
+  inc.appendChild(msgRow);
+
+  // Cards metas
+  const mGrid = div({ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" });
+
+  function metaCard(label, meta, ok, falta, corOk, corBar) {
+    const c = div({ background:"#f8fafc", borderRadius:"12px", padding:"12px", border:`2px solid ${ok?corOk:"#e2e8f0"}` });
+    const h = div({ display:"flex", justifyContent:"space-between", marginBottom:"6px" });
+    h.appendChild(div({ fontSize:"10px", color:"#64748b", fontWeight:"700" },label));
+    h.appendChild(el("div",{ class:"bebas", style:{ fontSize:"18px", color:corOk } },`R$${meta}`));
+    c.appendChild(h);
+    c.appendChild(el("div",{ class:"mono", style:{ fontSize:"18px", fontWeight:"700", color:ok?corOk:"#0f172a", marginBottom:"6px" } },rs(bruto)));
+    const bw = div({ height:"5px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", marginBottom:"4px" });
+    bw.appendChild(div({ height:"100%", width:`${pct(bruto,meta)}%`, background:corBar, borderRadius:"99px" }));
+    c.appendChild(bw);
+    const f = div({ display:"flex", justifyContent:"space-between", fontSize:"10px" });
+    f.appendChild(div({ color:"#94a3b8" },`${pct(bruto,meta)}%`));
+    f.appendChild(div({ color:ok?corOk:"#d97706", fontWeight:"700" },ok?"✓ BATIDA!":`falta ${rs(falta)}`));
+    c.appendChild(f);
+    return c;
+  }
+
+  mGrid.appendChild(metaCard("🎯 META",450,ok450,falta450,"#16a34a","linear-gradient(90deg,#22c55e,#16a34a)"));
+  mGrid.appendChild(metaCard("🚀 META",500,ok500,falta500,"#6d28d9","linear-gradient(90deg,#7c3aed,#6d28d9)"));
+  inc.appendChild(mGrid);
+
+  // Mini bônus status
+  const bRow = div({ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px" });
+  for (const [ok, label, falta, cor2] of [
+    [okB25,  `💎 25 Comfort`, faltaB25,  "#7c3aed"],
+    [okB85,  `💎 85 Comfort`, faltaB85,  "#6d28d9"],
+    [okBl20, `🖤 20 Black`,   faltaBl20, "#334155"],
+  ]) {
+    const bc = div({ background:ok?"#f0fdf4":"#f8fafc", borderRadius:"8px", padding:"8px", border:`1px solid ${ok?"#bbf7d0":"#e2e8f0"}`, textAlign:"center" });
+    bc.appendChild(div({ fontSize:"10px", color:ok?"#15803d":cor2, fontWeight:"700" },label));
+    bc.appendChild(div({ fontSize:"11px", color:ok?"#16a34a":"#64748b", marginTop:"2px" },ok?"✓ Batido!":`faltam ${falta}`));
+    bRow.appendChild(bc);
+  }
+  inc.appendChild(bRow);
+  wrap.appendChild(inc);
+
+  // ── FORMULÁRIO ──
+  let tipoAtual = "black";
+  const form = el("div",{ class:"card" });
+  form.appendChild(div({ fontSize:"11px", color:"#64748b", fontWeight:"700", letterSpacing:"1px", marginBottom:"12px" },"➕ REGISTRAR CORRIDA"));
+
+  const tipoBtns = div({ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:"5px", marginBottom:"12px" });
+  const inValor = el("input",{ type:"text", inputmode:"decimal", autocomplete:"off", placeholder:"0,00", style:{ width:"100%", background:"#f8fafc", border:"2px solid #475569", borderRadius:"8px", padding:"10px 12px", color:"#334155", fontSize:"16px", fontFamily:"monospace" } });
+  inValor.addEventListener("focus",()=>inValor.select());
+  inValor.addEventListener("input",e=>{ let v=e.target.value.replace(/[^0-9.,]/g,"").replace(",","."); const p=v.split("."); if(p.length>2)v=p[0]+"."+p.slice(1).join(""); e.target.value=v; });
+
+  const addBtn = el("button",{ class:"btn", style:{ width:"100%", background:"linear-gradient(135deg,#334155,#1e293b)", color:"#fff" } },"REGISTRAR 🖤 Black");
+
+  function atualizarForm() {
+    const t = TIPOS.find(x=>x.key===tipoAtual);
+    form.style.borderColor = t.color+"44";
+    inValor.style.borderColor = t.color;
+    inValor.style.color = t.color;
+    addBtn.style.background = `linear-gradient(135deg,${t.color},${t.color}cc)`;
+    addBtn.textContent = `REGISTRAR ${t.icon} ${t.label}`;
+    tipoBtns.querySelectorAll("button").forEach((b,i)=>{
+      const rt=TIPOS[i];
+      b.style.background = rt.key===tipoAtual?rt.bg:"#f8fafc";
+      b.style.borderColor = rt.key===tipoAtual?rt.color:"#e2e8f0";
+      b.style.color = rt.key===tipoAtual?rt.color:"#64748b";
+    });
+  }
+
+  for (const t of TIPOS) {
+    const b = el("button",{
+      style:{ background:t.key==="black"?t.bg:"#f8fafc", border:`2px solid ${t.key==="black"?t.color:"#e2e8f0"}`, borderRadius:"8px", padding:"6px 2px", cursor:"pointer", color:t.key==="black"?t.color:"#64748b", fontSize:"10px", fontWeight:"700", textAlign:"center" },
+      onClick:()=>{ tipoAtual=t.key; atualizarForm(); }
+    });
+    b.appendChild(div({ fontSize:"14px", marginBottom:"2px" },t.icon));
+    b.appendChild(document.createTextNode(t.label));
+    tipoBtns.appendChild(b);
+  }
+  form.appendChild(tipoBtns);
+
+  const campos = div({ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"12px" });
+  const wValor = div({});
+  wValor.appendChild(div({ fontSize:"10px", color:"#64748b", fontWeight:"700", marginBottom:"4px" },"💰 Valor (R$)"));
+  wValor.appendChild(inValor);
+  campos.appendChild(wValor);
+
+  const wKm = div({});
+  wKm.appendChild(div({ fontSize:"10px", color:"#16a34a", fontWeight:"700", marginBottom:"4px" },"🟢 km c/ passageiro"));
+  const inKm = el("input",{ type:"text", inputmode:"decimal", autocomplete:"off", placeholder:"0.0", style:{ width:"100%", background:"#f8fafc", border:"2px solid #bbf7d0", borderRadius:"8px", padding:"10px 12px", color:"#16a34a", fontSize:"16px", fontFamily:"monospace" } });
+  inKm.addEventListener("focus",()=>inKm.select());
+  inKm.addEventListener("input",e=>{ let v=e.target.value.replace(/[^0-9.,]/g,"").replace(",","."); const p=v.split("."); if(p.length>2)v=p[0]+"."+p.slice(1).join(""); e.target.value=v; });
+  wKm.appendChild(inKm);
+  campos.appendChild(wKm);
+  form.appendChild(campos);
+
+  addBtn.addEventListener("click",()=>{
+    const v = parseFloat(inValor.value)||0;
+    const k = parseFloat(inKm.value)||0;
+    if (!v||v<=0||!k||k<=0){ alert("Preencha valor e km!"); return; }
+    estado[diaAtivo].corridas.push({ tipo:tipoAtual, valor:v, km:k, hora:new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) });
+    salvar(); render();
+  });
+  form.appendChild(addBtn);
+  wrap.appendChild(form);
+
+  // ── RESUMO DO DIA ──
+  const res = el("div",{ class:"card", style:{ border:`1px solid ${ok450?"#bbf7d0":"#e2e8f0"}` } });
+  const rh = div({ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"10px" });
+  const rl = div({});
+  rl.appendChild(el("div",{ class:"bebas", style:{ fontSize:"24px", color:"#0f172a" } },`${info.label} ${info.date}`));
+  rl.appendChild(div({ fontSize:"11px", color:"#64748b" },`${corridas.length} corridas registradas`));
+  if ((d.bonusDia||0) > 0) rl.appendChild(div({ fontSize:"11px", color:"#16a34a", fontWeight:"700" },`🎁 +R$${(d.bonusDia||0).toFixed(2)} bônus incluído`));
+  rh.appendChild(rl);
+  const rr = div({ textAlign:"right" });
+  rr.appendChild(div({ fontSize:"10px", color:"#64748b" },"BRUTO"));
+  rr.appendChild(el("div",{ class:"bebas mono", style:{ fontSize:"28px", color:ok450?"#16a34a":bruto>0?"#d97706":"#94a3b8" } },rs(bruto)));
+  rr.appendChild(div({ fontSize:"10px", color:"#64748b" },"LÍQUIDO"));
+  rr.appendChild(el("div",{ class:"bebas mono", style:{ fontSize:"20px", color:"#64748b" } },rs(liquido)));
+  rh.appendChild(rr);
+  res.appendChild(rh);
+
+  const barra = div({ height:"6px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", marginBottom:"12px" });
+  barra.appendChild(div({ height:"100%", width:`${pct(bruto,500)}%`, background:ok450?"linear-gradient(90deg,#22c55e,#16a34a)":"linear-gradient(90deg,#f59e0b,#d97706)", borderRadius:"99px" }));
+  res.appendChild(barra);
+
+  // Por tipo
+  const tg = div({ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:"5px", marginBottom:"12px" });
+  for (const t of TIPOS) {
+    const cnt  = corridas.filter(r=>r.tipo===t.key).length;
+    const earn = corridas.filter(r=>r.tipo===t.key).reduce((s,r)=>s+r.valor,0);
+    const tkm  = corridas.filter(r=>r.tipo===t.key).reduce((s,r)=>s+r.km,0);
+    const tc = div({ background:t.bg, borderRadius:"8px", padding:"8px 4px", border:`1px solid ${t.color}44`, textAlign:"center" });
+    tc.appendChild(div({ fontSize:"14px", marginBottom:"2px" },t.icon));
+    tc.appendChild(el("div",{ class:"mono", style:{ color:t.color, fontSize:"13px", fontWeight:"700" } },`${cnt}`));
+    tc.appendChild(div({ fontSize:"9px", color:"#64748b" },`R$${earn.toFixed(0)}`));
+    tc.appendChild(div({ fontSize:"8px", color:"#94a3b8" },`${tkm.toFixed(1)}km`));
+    tg.appendChild(tc);
+  }
+  res.appendChild(tg);
+
+  // KM campos
+  const kg = div({ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"10px" });
+  function kmField(label, color, val, onCh) {
+    const w = div({});
+    w.appendChild(div({ fontSize:"10px", color, fontWeight:"700", marginBottom:"4px" },label));
+    const inp = el("input",{ type:"text", inputmode:"decimal", autocomplete:"off", placeholder:"0.0", style:{ width:"100%", background:"#f8fafc", border:`2px solid ${color}44`, borderRadius:"8px", padding:"9px 11px", color, fontSize:"15px", fontFamily:"monospace" } });
+    inp.value = val||"";
+    inp.addEventListener("focus",()=>inp.select());
+    inp.addEventListener("input",e=>{ let v=e.target.value.replace(/[^0-9.,]/g,"").replace(",","."); const p=v.split("."); if(p.length>2)v=p[0]+"."+p.slice(1).join(""); e.target.value=v; onCh(parseFloat(v)||0); salvar(); render(); });
+    w.appendChild(inp);
+    return w;
+  }
+  kg.appendChild(kmField("🐬 KM TOTAL DO DIA","#0284c7",d.kmTotal,v=>estado[diaAtivo].kmTotal=v));
+  kg.appendChild(kmField("🏠 KM PESSOAL","#d97706",d.kmPessoal,v=>estado[diaAtivo].kmPessoal=v));
+  res.appendChild(kg);
+
+  // KM vazio métricas
+  if (kmTot > 0) {
+    const mb = div({ background:"#f8fafc", borderRadius:"10px", padding:"10px 12px", border:"1px solid #e2e8f0", marginBottom:"10px" });
+    const mg = div({ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"6px", marginBottom:"8px" });
+    for (const m of [
+      { l:"km Uber",  v:kmUber.toFixed(1),  c:"#0284c7" },
+      { l:"c/ pass.", v:kmPass.toFixed(1),  c:"#16a34a" },
+      { l:"vazio",    v:kmVazio.toFixed(1), c:vc },
+      { l:"% vazio",  v:`${pctV}%`,         c:vc },
+    ]) {
+      const mc = div({ textAlign:"center", background:"#fff", borderRadius:"7px", padding:"6px 4px", border:"1px solid #e2e8f0" });
+      mc.appendChild(div({ fontSize:"9px", color:"#64748b", marginBottom:"2px" },m.l));
+      mc.appendChild(el("div",{ class:"mono", style:{ color:m.c, fontSize:"12px", fontWeight:"700" } },m.v));
+      mg.appendChild(mc);
+    }
+    mb.appendChild(mg);
+    const brow = div({ height:"5px", background:"#e2e8f0", borderRadius:"99px", overflow:"hidden", display:"flex" });
+    brow.appendChild(div({ width:`${100-pctV}%`, background:"linear-gradient(90deg,#22c55e,#16a34a)" }));
+    brow.appendChild(div({ flex:"1", background:vc, opacity:"0.4" }));
+    mb.appendChild(brow);
+    res.appendChild(mb);
+  }
+
+  // ── HORÁRIOS / TEMPO PRODUTIVO ──
+  const hBox = div({ background:"#f8fafc", borderRadius:"10px", padding:"12px", border:"1px solid #e2e8f0" });
+  hBox.appendChild(div({ fontSize:"10px", color:"#64748b", fontWeight:"700", letterSpacing:"1px", marginBottom:"10px" },"⏱ HORÁRIOS DO DIA"));
+  const hGrid = div({ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"10px" });
+
+  function timeField(label, color, val, key) {
+    const w = div({});
+    w.appendChild(div({ fontSize:"10px", color, fontWeight:"700", marginBottom:"4px" },label));
+    const inp = el("input",{ type:"time", style:{ width:"100%", background:"#fff", border:`2px solid ${color}44`, borderRadius:"8px", padding:"8px 10px", color, fontSize:"14px", fontFamily:"monospace" } });
+    inp.value = val||"";
+    inp.addEventListener("change",e=>{ estado[diaAtivo][key]=e.target.value; salvar(); render(); });
+    w.appendChild(inp);
+    return w;
+  }
+
+  hGrid.appendChild(timeField("🟢 Saída",       "#16a34a", d.horaSaida,        "horaSaida"));
+  hGrid.appendChild(timeField("🔴 Fim do dia",   "#dc2626", d.horaFim,          "horaFim"));
+  hGrid.appendChild(timeField("🍽 Saiu almoço",  "#d97706", d.horaAlmocoSaiu,   "horaAlmocoSaiu"));
+  hGrid.appendChild(timeField("✅ Voltou almoço","#0284c7", d.horaAlmocoVoltou, "horaAlmocoVoltou"));
+  hBox.appendChild(hGrid);
+
+  // Resultado tempo
+  if (tempo) {
+    const tRes = div({ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"6px" });
+    const nCorr = corridas.length;
+    const tmedPorCorrida = nCorr > 0 ? Math.round(tempo.trabalhado / nCorr) : 0;
+    for (const m of [
+      { l:"Total trabalhado", v:minToHm(tempo.trabalhado), c:"#0284c7" },
+      { l:"Almoço",           v:minToHm(tempo.almoço),     c:"#d97706" },
+      { l:"Média/corrida",    v:minToHm(tmedPorCorrida),   c:"#7c3aed" },
+    ]) {
+      const mc = div({ textAlign:"center", background:"#fff", borderRadius:"8px", padding:"8px 4px", border:"1px solid #e2e8f0" });
+      mc.appendChild(div({ fontSize:"9px", color:"#64748b", marginBottom:"2px" },m.l));
+      mc.appendChild(el("div",{ class:"mono", style:{ color:m.c, fontSize:"14px", fontWeight:"700" } },m.v));
+      tRes.appendChild(mc);
+    }
+    hBox.appendChild(tRes);
+  }
+  res.appendChild(hBox);
+  wrap.appendChild(res);
+
+  // ── LISTA DE CORRIDAS ──
+  if (corridas.length > 0) {
+    const lb = el("div",{ class:"card" });
+    let aberto = false;
+    const lbtn = el("button",{
+      style:{ width:"100%", background:"none", border:"none", padding:"4px 0", color:"#64748b", fontSize:"11px", fontWeight:"700", letterSpacing:"2px", cursor:"pointer", display:"flex", justifyContent:"space-between" },
+      onClick:()=>{ aberto=!aberto; lista.style.display=aberto?"block":"none"; arr.textContent=aberto?"▲":"▼"; }
+    });
+    lbtn.appendChild(el("span",{},`📋 CORRIDAS DO DIA (${corridas.length})`));
+    const arr = el("span",{},"▼");
+    lbtn.appendChild(arr);
+    lb.appendChild(lbtn);
+    const lista = div({ display:"none", marginTop:"10px", borderTop:"1px solid #e2e8f0", paddingTop:"10px" });
+    corridas.forEach((r,i)=>{
+      const t = TIPOS.find(x=>x.key===r.tipo)||TIPOS[3];
+      const row = div({ display:"flex", alignItems:"center", gap:"10px", padding:"8px", background:i%2===0?"#f8fafc":"#fff", borderRadius:"8px", marginBottom:"4px" });
+      row.appendChild(div({ fontSize:"16px" },t.icon));
+      const ri = div({ flex:"1" });
+      const rt = div({ display:"flex", gap:"8px", alignItems:"center" });
+      rt.appendChild(div({ fontSize:"11px", color:t.color, fontWeight:"700" },t.label));
+      rt.appendChild(div({ fontSize:"10px", color:"#94a3b8" },r.hora));
+      ri.appendChild(rt);
+      ri.appendChild(div({ fontSize:"10px", color:"#64748b" },`🟢 ${r.km.toFixed(1)} km c/ passageiro`));
+      row.appendChild(ri);
+      row.appendChild(el("div",{ class:"mono", style:{ color:t.color, fontSize:"14px", fontWeight:"700" } },rs(r.valor)));
+      row.appendChild(el("button",{
+        style:{ background:"none", border:"none", color:"#94a3b8", cursor:"pointer", fontSize:"20px", padding:"0 4px" },
+        onClick:()=>{ estado[diaAtivo].corridas.splice(i,1); salvar(); render(); }
+      },"×"));
+      lista.appendChild(row);
+    });
+    lb.appendChild(lista);
+    wrap.appendChild(lb);
+  }
+
+  return wrap;
+}
+
+// ═══════════════════════════════
+// BACKUP
+// ═══════════════════════════════
+function renderBackup() {
+  const box = el("div",{ class:"card" });
+  box.appendChild(div({ fontSize:"11px", color:"#64748b", fontWeight:"700", letterSpacing:"1px", marginBottom:"12px" },"💾 BACKUP DE DADOS"));
+  const conteudo = div({});
+  const btns = div({ display:"flex", gap:"8px", marginBottom:"8px" });
+
+  const btnExp = el("button",{ class:"btn", style:{ flex:"1", background:"linear-gradient(135deg,#16a34a,#15803d)", color:"#fff" },
+    onClick:()=>{
+      // Garante que salva na chave atual antes de exportar
+      salvar();
+      const data = { versao:"v3", data:new Date().toLocaleString("pt-BR"), dias:estado, nota:localStorage.getItem("uber_nota")||"" };
+      const json = JSON.stringify(data);
+      conteudo.innerHTML="";
+      const info = div({ fontSize:"11px", color:"#64748b", marginBottom:"6px" },"📋 Copie e salve no WhatsApp ou e-mail:");
+      const ta = el("textarea",{ readonly:"true", style:{ width:"100%", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:"8px", padding:"10px", color:"#0f172a", fontSize:"11px", fontFamily:"monospace", minHeight:"80px", resize:"vertical" } });
+      ta.value=json;
+      const btnC = el("button",{ class:"btn", style:{ width:"100%", marginTop:"8px", background:"#f1f5f9", border:"1px solid #e2e8f0", color:"#0f172a" },
+        onClick:()=>{
+          ta.select();
+          try { navigator.clipboard.writeText(json).then(()=>{ btnC.textContent="✓ COPIADO!"; btnC.style.background="#dcfce7"; btnC.style.color="#16a34a"; setTimeout(()=>{ btnC.textContent="📋 Copiar tudo"; btnC.style.background="#f1f5f9"; btnC.style.color="#0f172a"; },3000); }); }
+          catch { document.execCommand("copy"); btnC.textContent="✓ COPIADO!"; setTimeout(()=>{ btnC.textContent="📋 Copiar tudo"; },3000); }
+        }
+      },"📋 Copiar tudo");
+      conteudo.appendChild(info); conteudo.appendChild(ta); conteudo.appendChild(btnC);
+    }
+  },"⬇️ Exportar");
+
+  const btnImp = el("button",{ class:"btn", style:{ flex:"1", background:"linear-gradient(135deg,#6366f1,#4338ca)", color:"#fff" },
+    onClick:()=>{
+      conteudo.innerHTML="";
+      const info = div({ fontSize:"11px", color:"#64748b", marginBottom:"6px" },"Cole aqui o texto do backup:");
+      const ta = el("textarea",{ placeholder:"Cole o JSON aqui...", style:{ width:"100%", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:"8px", padding:"10px", color:"#0f172a", fontSize:"11px", fontFamily:"monospace", minHeight:"80px", resize:"vertical" } });
+      const btnR = el("button",{ class:"btn", style:{ width:"100%", marginTop:"8px", background:"linear-gradient(135deg,#6366f1,#4338ca)", color:"#fff" },
+        onClick:()=>{
+          try {
+            const data = JSON.parse(ta.value);
+            const dias = data.dias||data;
+            if (Array.isArray(dias)) {
+              while(dias.length<7) dias.push(diaVazio());
+              estado = dias.slice(0,7).map(d=>({
+                corridas: Array.isArray(d.corridas||d.rides)?(d.corridas||d.rides):[],
+                kmTotal: d.kmTotal||d.kmOdometro||d.km||0,
+                kmPessoal: d.kmPessoal||0,
+                horaSaida: d.horaSaida||"", horaAlmocoSaiu: d.horaAlmocoSaiu||"",
+                horaAlmocoVoltou: d.horaAlmocoVoltou||"", horaFim: d.horaFim||"",
+                bonusAlertados: d.bonusAlertados||[], bonusDia: d.bonusDia||0
+              }));
+              if(data.nota) localStorage.setItem("uber_nota",data.nota);
+              salvar(); alert("✅ Dados restaurados!"); render();
+            }
+          } catch { alert("❌ JSON inválido!"); }
+        }
+      },"⬆️ Restaurar dados");
+      conteudo.appendChild(info); conteudo.appendChild(ta); conteudo.appendChild(btnR);
+    }
+  },"⬆️ Importar");
+
+  btns.appendChild(btnExp); btns.appendChild(btnImp);
+  box.appendChild(btns); box.appendChild(conteudo);
+  box.appendChild(div({ fontSize:"10px", color:"#94a3b8", marginTop:"8px" },"💡 Exporte todo dia e salve no WhatsApp para você mesmo."));
+  return box;
+}
+
+// ═══════════════════════════════
+// INICIAR
+// ═══════════════════════════════
+render();
+</script>
+</body>
+</html>
